@@ -34,6 +34,8 @@ method WaitForEvent() -> (event: Event)
 
 method SendMessage(target: string, message: string, server: string) -> (success: bool)
 
+method GetServerNick(server: string) -> (nick: string)
+
 type Event (
     type: string,
     subtype: string,
@@ -68,6 +70,14 @@ my $interface = {
             },
             'returns' => {
                 'description' => 'string'
+            }
+        },
+        'GetServerNick' => {
+            'parameters' => {
+                'server' => 'string'
+            },
+            'returns' => {
+                'nick' => 'string'
             }
         }
     }
@@ -237,6 +247,28 @@ sub process_varlink_call {
             }
         });
 
+    } elsif ($method eq 'org.irssi.varlink.GetServerNick') {
+        my $server_tag = $params->{server};
+
+        if (!$server_tag) {
+            return encode_error("org.varlink.service.InvalidParameter",
+                "Missing required parameter: server");
+        }
+
+        my $server = Irssi::server_find_tag($server_tag);
+
+        if (!$server) {
+            return encode_error("org.irssi.varlink.ServerNotFound",
+                "Server not found or not connected", 
+                { server => $server_tag });
+        }
+
+        return $json->encode({
+            parameters => {
+                nick => $server->{nick}
+            }
+        });
+
     } elsif ($method eq 'org.irssi.varlink.TestEvent') {
         # Test method to generate a fake event for testing
         my $event = {
@@ -348,13 +380,24 @@ sub sig_message_private {
 
 # Cleanup on unload
 sub UNLOAD {
+    # Notify all clients that service is shutting down
+    my $shutdown_error = encode_error("org.varlink.service.ServiceShutdown", "Service is shutting down");
+    for my $client (@client_sockets) {
+        eval {
+            print $client $shutdown_error . "\0";
+            $client->flush();
+            # Shutdown write side to signal EOF to client
+            $client->shutdown(1);  # SHUT_WR
+        };
+        # Remove input handler first to prevent processing during shutdown
+        my $client_fd = fileno($client);
+        Irssi::input_remove($client_fd) if defined $client_fd;
+        close($client);
+    }
+
     if ($server_socket) {
         Irssi::input_remove(fileno($server_socket));
         close($server_socket);
-    }
-
-    for my $client (@client_sockets) {
-        close($client);
     }
     
     %client_buffers = ();  # Clear all client buffers

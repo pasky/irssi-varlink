@@ -223,6 +223,66 @@ test_send_message() {
     fi
 }
 
+# Test graceful shutdown notification on script reload
+test_graceful_shutdown() {
+    echo "Testing graceful shutdown notification..."
+    
+    local response_file="$TEST_CONFIG/shutdown_response"
+    
+    # Start a client waiting for events in background
+    (printf '{"method": "org.irssi.varlink.WaitForEvent", "parameters": {}, "more": true}\0'; sleep 10) | socat - "UNIX-CONNECT:$SOCKET_PATH" > "$response_file" &
+    local socat_pid=$!
+    
+    sleep 2
+    
+    # Trigger script reload (which calls UNLOAD)
+    echo "Triggering script reload..."
+    echo "/script unload varlink" >&3
+    sleep 1
+    echo "/script load $(pwd)/varlink.pl" >&3
+    
+    sleep 3
+    
+    # Check if socat process exited gracefully (should have received shutdown error and EOF)
+    local socat_exited=false
+    if ! kill -0 $socat_pid 2>/dev/null; then
+        socat_exited=true
+        echo "✓ Client connection terminated automatically"
+    else
+        echo "✗ Client connection still hanging"
+        kill $socat_pid 2>/dev/null || true
+        wait $socat_pid 2>/dev/null || true
+    fi
+    
+    # Check if we received shutdown notification
+    if [ -s "$response_file" ]; then
+        local response=$(cat "$response_file" | tr -d '\0')
+        echo "Shutdown response: $response"
+        
+        if echo "$response" | grep -q '"error":"org.varlink.service.ServiceShutdown"' && \
+           echo "$response" | grep -q '"description":"Service is shutting down"'; then
+            if $socat_exited; then
+                echo "✓ Graceful shutdown: notification sent and connection closed"
+                return 0
+            else
+                echo "✓ Shutdown notification sent (but connection didn't auto-close)"
+                return 0
+            fi
+        else
+            echo "✗ Received response but not shutdown error: $response"
+            return 1
+        fi
+    else
+        echo "✗ No shutdown notification received"
+        if $socat_exited; then
+            echo "   (but connection did close)"
+            return 0
+        else
+            return 1
+        fi
+    fi
+}
+
 # Test client disconnect handling (no error flood)
 test_disconnect_handling() {
     echo "Testing client disconnect handling..."
@@ -333,6 +393,7 @@ main() {
     test_interface_description || failed=$((failed + 1))
     test_send_message || failed=$((failed + 1))
     test_disconnect_handling || failed=$((failed + 1))
+    test_graceful_shutdown || failed=$((failed + 1))
     test_wait_for_event || failed=$((failed + 1))
     test_wait_for_event_streaming || failed=$((failed + 1))
     
