@@ -24,7 +24,7 @@ my $server_socket;
 my @client_sockets = ();
 my %client_buffers = ();  # Buffer for partial messages per client
 my %waiting_clients = ();  # Track clients waiting for events (client -> more_flag)
-my $json = JSON->new->utf8;
+my $json = JSON->new;
 
 # Varlink interface description string
 my $interface_description = <<'EOF';

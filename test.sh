@@ -208,6 +208,43 @@ test_wait_for_event_streaming() {
     fi
 }
 
+# Test UTF-8 encoding (no double-encoding)
+test_utf8_encoding() {
+    echo "Testing UTF-8 encoding..."
+    
+    local utf8_message="café 中文 🎉"
+    # Expected UTF-8 bytes: 636166c3a920e4b8ade6968720f09f8e89
+    
+    local response_file="$TEST_CONFIG/utf8_response"
+    (printf '{"method": "org.irssi.varlink.WaitForEvent", "parameters": {}}\0'; sleep 5) | socat - "UNIX-CONNECT:$SOCKET_PATH" > "$response_file" &
+    local socat_pid=$!
+    
+    sleep 1
+    varlink_call "{\"method\": \"org.irssi.varlink.TestEvent\", \"parameters\": {\"message\": \"$utf8_message\"}}" > /dev/null
+    sleep 2
+    
+    kill $socat_pid 2>/dev/null || true
+    wait $socat_pid 2>/dev/null || true
+    
+    if [ -s "$response_file" ]; then
+        # Check if the UTF-8 bytes appear correctly (not double-encoded)
+        local response_hex=$(xxd -p "$response_file" | tr -d '\n')
+        if echo "$response_hex" | grep -q "636166c3a920e4b8ade6968720f09f8e89"; then
+            echo "✓ UTF-8 properly encoded (no double-encoding)"
+            return 0
+        else
+            echo "✗ UTF-8 encoding issue detected"
+            echo "Expected hex pattern: 636166c3a920e4b8ade6968720f09f8e89"
+            echo "Actual response:"
+            xxd "$response_file" | head -3
+            return 1
+        fi
+    else
+        echo "✗ No UTF-8 response received"
+        return 1
+    fi
+}
+
 # Test SendMessage method (without real IRC server)
 test_send_message() {
     echo "Testing SendMessage..."
@@ -392,6 +429,7 @@ main() {
     test_get_info || failed=$((failed + 1))
     test_interface_description || failed=$((failed + 1))
     test_send_message || failed=$((failed + 1))
+    test_utf8_encoding || failed=$((failed + 1))
     test_disconnect_handling || failed=$((failed + 1))
     test_graceful_shutdown || failed=$((failed + 1))
     test_wait_for_event || failed=$((failed + 1))
